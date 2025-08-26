@@ -1,0 +1,64 @@
+import pandas as pd
+import numpy as np
+
+# ------------------- Data location -------------------
+data_location = "../..//out//"
+docs_location = "../..//docs//"
+data_file = "FXData_AllPairs.xlsx"
+row_data_bgn = 2
+
+# ------------------- Date range -------------------
+str_data_bgn = "1971-01-04"
+str_data_end = "2016-09-30"
+
+# ------------------- Scenario length -------------------
+num_monthly_prds = 12 * 15   # 15 years (example)
+scen_freq_months = 1
+
+# ------------------- Tail probabilities -------------------
+tail_probs_max = 100
+tail_probs_BBB = 5
+tail_probs_AAA_multiplier = 95
+
+# ------------------- Asset/Liability Currency Pairs -------------------
+arrLbtAsstCrcnyPairs = [
+    ('EURGBP', 'EURUSD'),
+    ('GBPUSD', 'USDEUR'),
+    ('USDGBP', 'USDGBP')
+]
+
+num_crncy_pairs = len(arrLbtAsstCrcnyPairs)
+
+# ------------------- Read Excel data -------------------
+xls = pd.ExcelFile(data_location + data_file)
+
+results = {}
+
+for iterFXPairs in range(num_crncy_pairs):
+    sheet_name = f"AsstLiab_{arrLbtAsstCrcnyPairs[iterFXPairs][0]}{arrLbtAsstCrcnyPairs[iterFXPairs][1]}"
+    
+    # Read sheet
+    df = pd.read_excel(xls, sheet_name=sheet_name, header=None)
+    
+    # Dates and data
+    dates = pd.to_datetime(df.iloc[row_data_bgn-1:, 0])
+    data = df.iloc[row_data_bgn-1:, 1].astype(float).values
+    
+    # Filter by date range
+    mask = (dates >= pd.to_datetime(str_data_bgn)) & (dates <= pd.to_datetime(str_data_end))
+    dates = dates[mask]
+    data = data[mask]
+
+    # Loop over scenarios
+    for explWinLen in range(scen_freq_months, num_monthly_prds + 1, scen_freq_months):
+        lag = explWinLen
+        ret = np.diff(np.log(data[-lag:]))  # log returns
+        
+        BBB = np.percentile(ret, tail_probs_BBB)
+        max_val = np.percentile(ret, tail_probs_max)
+        
+        results[(explWinLen, iterFXPairs)] = max_val / BBB
+
+# Print results dictionary
+for k, v in results.items():
+    print(f"ExpWinLen={k[0]}, FXPairIndex={k[1]}, Result={v}")
