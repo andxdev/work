@@ -1,0 +1,43 @@
+import numpy as np
+import pandas as pd
+
+# ---------- helpers ----------
+def monthly_from_daily(dates, fx_levels, how="eom"):
+    s = pd.Series(fx_levels, index=pd.to_datetime(dates)).sort_index()
+    return s.resample("M").last() if how == "eom" else s.resample("M").mean()
+
+def h_month_dep(series, h, use_log=False):
+    """Compounded h-month JPY depreciation (%). 'series' must be USDJPY monthly levels."""
+    if use_log:
+        r = 100 * (np.log(series.shift(-h)) - np.log(series))
+    else:
+        r = 100 * (series.shift(-h) / series - 1.0)
+    return r
+
+def historical_max_curve_usdjpy(monthly_usdjpy: pd.Series, H: int = 180, use_log=False):
+    """
+    For each horizon h=1..H, compute max_t h-month JPY depreciation vs USD (in %).
+    Assumes input is USDJPY (JPY per USD). If you have JPYUSD, pass 1/series instead.
+    """
+    out = []
+    for h in range(1, H + 1):
+        dep_h = h_month_dep(monthly_usdjpy, h, use_log=use_log)
+        out.append(dep_h[:-h].max())  # drop the last h NaNs before max
+    return pd.Series(out, index=pd.RangeIndex(1, H + 1, name="months"), name="HistoricalMax(%)")
+
+# ---------- usage ----------
+# 1) Load daily FX levels for the pair (example columns: Date, FX)
+df_daily = pd.read_csv("your_daily_fx.csv")  # columns: Date, FX
+# If your data is JPYUSD (USD per JPY), convert to USDJPY:
+# df_daily["FX"] = 1.0 / df_daily["FX"]
+
+# 2) Daily -> monthly USDJPY
+usdjpy_m = monthly_from_daily(df_daily["Date"], df_daily["FX"], how="eom")
+
+# 3) Historical Max curve up to, say, 180 months
+hist_max = historical_max_curve_usdjpy(usdjpy_m, H=180, use_log=False)
+
+# hist_max is a Series:
+# months  1      -> max 1M JPY depreciation observed
+#         2      -> max 2M compounded JPY depreciation observed
+#         ...
