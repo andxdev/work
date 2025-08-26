@@ -39,3 +39,15 @@ def historical_max_curve(monthly_fx: pd.Series,
 
     idx = pd.RangeIndex(1, H + 1, name="months")
     return pd.Series(out, index=idx, name="HistoricalMax(%)")
+
+
+# 1) Build monthly FX
+monthly = monthly_from_daily(df_daily["Date"], df_daily["FX"], how="eom")
+
+# 2) Compute curve up to 180 months.
+#    If your file is USDJPY, leave is_usdjpy=True.
+#    If your file is JPYUSD, set is_usdjpy=False.
+hist_max = historical_max_curve(monthly, H=180, is_usdjpy=True, use_log=False)
+
+print(len(monthly), "monthly points; first 5:", monthly.head().to_list())
+print(hist_max.head(10))
