@@ -1,0 +1,56 @@
+\documentclass[tikz,border=8pt]{standalone}
+\usepackage{tikz}
+\usetikzlibrary{positioning}
+
+\begin{document}
+\begin{tikzpicture}[font=\sffamily]
+
+% --- configurable brand colors (adjust if needed) ---
+\definecolor{brand}{RGB}{200,16,46} % highlight for Spark Air (S&P red-ish)
+\definecolor{muted}{RGB}{120,120,120}
+
+% --- canvas size ---
+\def\W{10} % width
+\def\H{7}  % height
+
+% --- outer frame and quadrant lines ---
+\draw[very thick] (0,0) rectangle (\W,\H);
+\draw[thick,muted] (0,\H/2) -- (\W,\H/2);
+\draw[thick,muted] (\W/2,0) -- (\W/2,\H);
+
+% --- axis labels ---
+\node[anchor=west] at (0,\H+0.8) {\large \textbf{Depth of Insight}};
+\node[anchor=west,muted] at (0,\H+0.1) {\footnotesize Low $\rightarrow$ High};
+
+\node[anchor=east,rotate=90] at (-0.8,\H) {\large \textbf{Security \& Compliance}};
+\node[anchor=east,rotate=90,muted] at (-0.1,\H) {\footnotesize Low $\rightarrow$ High};
+
+% --- quadrant titles (optional) ---
+%\node[muted] at (\W*0.25,\H*0.75) {Experiment, risky};
+%\node[muted] at (\W*0.75,\H*0.75) {Best fit};
+%\node[muted] at (\W*0.25,\H*0.25) {Not viable};
+%\node[muted] at (\W*0.75,\H*0.25) {Operational baseline};
+
+% --- competitor points ---
+% Coordinates: (x,y) where x=security, y=insight
+% scale roughly within [0,\W] and [0,\H]
+% bottom-left = (0,0), top-right = (\W,\H)
+
+% External LLMs: high insight, low security
+\node[draw,rounded corners,inner sep=3pt] at (\W*0.25,\H*0.75) {External LLMs};
+
+% Manual Review: high security, low insight/speed
+\node[draw,rounded corners,inner sep=3pt] at (\W*0.75,\H*0.30) {Manual Review};
+
+% Diff Tools: secure but shallow context
+\node[draw,rounded corners,inner sep=3pt] at (\W*0.70,\H*0.45) {Diff Tools};
+
+% Spark Air: high insight + high security (highlight)
+\node[draw=brand,fill=brand!12,very thick,rounded corners,inner sep=4pt] 
+      at (\W*0.75,\H*0.80) {\textbf{Spark Air}};
+
+% --- legend (optional) ---
+%\node[anchor=west,muted] at (0,-0.8) {\footnotesize Size/position illustrative. Adjust to taste.}
+
+\end{tikzpicture}
+\end{document}
