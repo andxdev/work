@@ -1,0 +1,231 @@
+import numpy as np
+import pandas as pd
+
+def gower_distance(df, numeric_cols, ordinal_cols):
+    """
+    Compute Gower distance matrix for numeric + ordinal features.
+    Assumes df[ordinal_cols] already encoded numerically in correct order.
+    """
+    X = df[numeric_cols + ordinal_cols].to_numpy(dtype=float)
+    n_rows, n_cols = X.shape
+    
+    n_num = len(numeric_cols)
+    n_ord = len(ordinal_cols)
+    
+    # Ranges for numeric features
+    num_ranges = np.nanmax(X[:, :n_num], axis=0) - np.nanmin(X[:, :n_num], axis=0)
+    num_ranges[num_ranges == 0] = 1.0
+    
+    # Ranges for ordinal features (treated as numeric with their own range)
+    if n_ord > 0:
+        ord_ranges = np.nanmax(X[:, n_num:], axis=0) - np.nanmin(X[:, n_num:], axis=0)
+        ord_ranges[ord_ranges == 0] = 1.0
+    else:
+        ord_ranges = np.array([])
+    
+    D = np.zeros((n_rows, n_rows), dtype=float)
+    
+    for i in range(n_rows):
+        for j in range(i+1, n_rows):
+            sij = 0.0
+            
+            # numeric part
+            if n_num > 0:
+                sij += np.sum(np.abs(X[i, :n_num] - X[j, :n_num]) / num_ranges)
+            
+            # ordinal part
+            if n_ord > 0:
+                sij += np.sum(np.abs(X[i, n_num:] - X[j, n_num:]) / ord_ranges)
+            
+            # average over all features
+            sij /= (n_num + n_ord)
+            D[i, j] = D[j, i] = sij
+    
+    return D
+
+
+
+
+
+import hdbscan
+
+def robust_z_scores(df, cols):
+    """
+    Robust z-scores using median and IQR.
+    """
+    z = pd.DataFrame(index=df.index, columns=cols, dtype=float)
+    for c in cols:
+        med = df[c].median()
+        iqr = df[c].quantile(0.75) - df[c].quantile(0.25)
+        if iqr == 0:
+            iqr = 1.0
+        z[c] = (df[c] - med) / iqr
+    return z
+
+
+def detect_outliers_sectorwise(
+    df,
+    sector_col="Sector",
+    numeric_cols=None,
+    volatility_col="Calculated_volatility",
+    min_cluster_size=15,
+    min_samples=5,
+    medoid_quantile=0.95
+):
+    """
+    Sector-wise:
+    - map ordinal volatility
+    - compute Gower distance
+    - cluster with HDBSCAN (precomputed distance)
+    - compute distance to cluster medoid
+    - flag outliers and provide reason codes
+    """
+    
+    if numeric_cols is None:
+        numeric_cols = ["Debt_EBITDA", "FFO_Debt", "Interest_coverage"]
+    
+    # Map ordinal volatility
+    ordinal_map = {"Low": 1, "Medial": 2, "Standard": 3}
+    df = df.copy()
+    df["Volatility_ord"] = df[volatility_col].map(ordinal_map)
+    ordinal_cols = ["Volatility_ord"]
+    
+    all_results = []
+    
+    for sector, df_sec in df.groupby(sector_col):
+        df_sec = df_sec.copy()
+        if len(df_sec) < (min_cluster_size + 2):
+            # Too few points to cluster meaningfully, skip or mark as non-outlier
+            df_sec["cluster_label"] = -99
+            df_sec["is_noise"] = False
+            df_sec["medoid_distance"] = np.nan
+            df_sec["outlier_score"] = np.nan
+            df_sec["outlier_flag"] = False
+            df_sec["reason_1"] = np.nan
+            df_sec["reason_2"] = np.nan
+            all_results.append(df_sec)
+            continue
+        
+        # --- Gower distance within this sector ---
+        D = gower_distance(df_sec, numeric_cols, ordinal_cols)
+        
+        # --- HDBSCAN on precomputed distance ---
+        clusterer = hdbscan.HDBSCAN(
+            metric='precomputed',
+            min_cluster_size=min_cluster_size,
+            min_samples=min_samples
+        )
+        labels = clusterer.fit_predict(D)
+        df_sec["cluster_label"] = labels
+        df_sec["is_noise"] = labels == -1
+        
+        # HDBSCAN outlier scores (0 to ~1); noise tends to be high
+        if hasattr(clusterer, "outlier_scores_"):
+            df_sec["outlier_score"] = clusterer.outlier_scores_
+        else:
+            df_sec["outlier_score"] = np.nan
+        
+        # --- Medoid distances per cluster ---
+        n = len(df_sec)
+        medoid_idx = {}
+        medoid_dist = np.full(n, np.nan)
+        
+        for cl in np.unique(labels):
+            if cl == -1:
+                continue  # skip noise for medoid computation
+            
+            idx = np.where(labels == cl)[0]
+            if len(idx) == 0:
+                continue
+            
+            # medoid = point with minimal total distance to others in cluster
+            subD = D[np.ix_(idx, idx)]
+            tot_dist = subD.sum(axis=1)
+            m_local = idx[np.argmin(tot_dist)]
+            medoid_idx[cl] = m_local
+            
+            # distance to medoid for all points in that cluster
+            medoid_dist[idx] = D[m_local, idx]
+        
+        df_sec["medoid_distance"] = medoid_dist
+        
+        # --- Threshold: far from medoid inside non-noise clusters ---
+        in_cluster_mask = (df_sec["cluster_label"] != -1) & df_sec["medoid_distance"].notna()
+        if in_cluster_mask.any():
+            threshold = df_sec.loc[in_cluster_mask, "medoid_distance"].quantile(medoid_quantile)
+        else:
+            threshold = np.inf
+        
+        # Outlier flag: either noise OR far from medoid
+        df_sec["outlier_flag"] = df_sec["is_noise"] | (
+            in_cluster_mask & (df_sec["medoid_distance"] > threshold)
+        )
+        
+        # --- Reason codes via robust z-scores (per sector) ---
+        z = robust_z_scores(df_sec, numeric_cols + ["Volatility_ord"])
+        
+        reasons_1 = []
+        reasons_2 = []
+        for i, row in df_sec.iterrows():
+            if not row["outlier_flag"]:
+                reasons_1.append(np.nan)
+                reasons_2.append(np.nan)
+                continue
+            
+            abs_z = z.loc[i].abs()
+            # sort features by how unusual they are
+            top_feats = abs_z.sort_values(ascending=False).index.tolist()
+            
+            # Map Volatility_ord back to readable label
+            pretty = {
+                "Debt_EBITDA": "Debt/EBITDA",
+                "FFO_Debt": "FFO/Debt",
+                "Interest_coverage": "Interest coverage",
+                "Volatility_ord": "Calculated volatility level",
+            }
+            
+            reasons_1.append(pretty.get(top_feats[0], top_feats[0]) if len(top_feats) > 0 else np.nan)
+            reasons_2.append(pretty.get(top_feats[1], top_feats[1]) if len(top_feats) > 1 else np.nan)
+        
+        df_sec["reason_1"] = reasons_1
+        df_sec["reason_2"] = reasons_2
+        
+        all_results.append(df_sec)
+    
+    result = pd.concat(all_results, axis=0).sort_index()
+    return result
+
+
+
+
+numeric_cols = ["Debt_EBITDA", "FFO_Debt", "Interest_coverage"]
+
+results = detect_outliers_sectorwise(
+    df,
+    sector_col="Sector",
+    numeric_cols=numeric_cols,
+    volatility_col="Calculated_volatility",
+    min_cluster_size=15,    # tune based on sector sizes
+    min_samples=5,
+    medoid_quantile=0.95    # top 5% farthest-from-medoid within clusters
+)
+
+# Inspect flagged rows
+flags = results[results["outlier_flag"]]
+flags[[
+    "Sector",
+    "Debt_EBITDA",
+    "FFO_Debt",
+    "Interest_coverage",
+    "Calculated_volatility",
+    "cluster_label",
+    "is_noise",
+    "medoid_distance",
+    "outlier_score",
+    "reason_1",
+    "reason_2"
+]].head()
+
+
+
+
